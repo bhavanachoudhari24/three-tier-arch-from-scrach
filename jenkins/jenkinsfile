@@ -16,7 +16,7 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps { checkout scm }
+      steps { checkout scmGit(branches: [[name: '*/master']], extensions: [], userRemoteConfigs: [[url: 'https://github.com/bhavanachoudhari24/three-tier-arch-from-scrach.git']])}
     }
 
     stage('Build Backend (Maven WAR)') {
@@ -89,3 +89,4 @@ pipeline {
     failure { echo "Pipeline failed" }
   }
 }
+
