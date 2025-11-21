@@ -1,0 +1,91 @@
+pipeline {
+  agent any
+
+  environment {
+    EC2_USER = "ec2-user"
+    EC2_HOST = "${jenkins_public_ip}"      // replace w/ Terraform output or set as Jenkins param
+    TOMCAT_WEBAPPS = "/opt/tomcat/webapps"
+    NEXUS_URL = "http://${NEXUS_PUBLIC_IP}:8081"
+    NEXUS_REPO = "maven-releases"
+    S3_BUCKET = "${s3_frontend_bucket}"
+    DB_HOST = "${rds_endpoint}"
+    DB_NAME = "demo_db"
+    DB_USER = "demo"
+    DB_PASS = credentials('rds-db-pass') // store in Jenkins credentials
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Build Backend (Maven WAR)') {
+      steps {
+        dir('backend') {
+          sh 'mvn clean package -DskipTests'
+          sh 'cp target/*.war ../artifacts/backend.war'
+        }
+      }
+    }
+
+    stage('Build Frontend') {
+      steps {
+        dir('frontend') {
+          sh 'npm install'
+          sh 'npm run build'
+          sh 'cp -r build ../artifacts/frontend'
+        }
+      }
+    }
+
+    stage('Publish WAR to Nexus') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'nexus-creds', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+          sh """
+            # Use curl to upload the WAR to Nexus raw repo or use Maven deploy plugin for maven repo
+            curl -u $NEXUS_USER:$NEXUS_PASS --upload-file artifacts/backend.war ${NEXUS_URL}/repository/${NEXUS_REPO}/tomcatapp.war
+          """
+        }
+      }
+    }
+
+    stage('Upload Frontend to S3') {
+      steps {
+        withAWS(role: '', region: "${params.AWS_REGION}") {
+          sh """
+            aws s3 sync artifacts/frontend s3://${S3_BUCKET} --acl public-read
+          """
+        }
+      }
+    }
+
+    stage('Copy WAR to App Server & Deploy') {
+      steps {
+        sshagent (credentials: ['ssh-ec2-key']) {
+          sh """
+            scp -o StrictHostKeyChecking=no artifacts/backend.war ${EC2_USER}@${EC2_HOST}:${TOMCAT_WEBAPPS}/tomcatapp.war
+            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} 'sudo systemctl restart tomcat'
+          """
+        }
+      }
+    }
+
+    stage('Run DB Migrations') {
+      steps {
+        sshagent (credentials: ['ssh-ec2-key']) {
+          sh """
+            # copy migration scripts
+            scp -o StrictHostKeyChecking=no database/migration/*.sql ${EC2_USER}@${EC2_HOST}:/opt/app/database/
+            # execute migrations using psql (app instance has psql installed)
+            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "PGPASSWORD=${DB_PASS} psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -f /opt/app/database/V1__init.sql"
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo "Pipeline successful" }
+    failure { echo "Pipeline failed" }
+  }
+}
