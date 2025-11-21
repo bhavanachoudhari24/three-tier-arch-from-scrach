@@ -11,7 +11,7 @@ pipeline {
     DB_HOST = "${rds_endpoint}"
     DB_NAME = "demo_db"
     DB_USER = "demo"
-    DB_PASS = credentials('rds-db-pass') // store in Jenkins credentials
+    DB_PASS = credentials('db-password') // store in Jenkins credentials
   }
 
   stages {
@@ -89,5 +89,6 @@ pipeline {
     failure { echo "Pipeline failed" }
   }
 }
+
 
 
